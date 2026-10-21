@@ -24,7 +24,9 @@ class BlockInline(admin.TabularInline):
 
 @admin.register(Lesson)
 class LessonAdmin(admin.ModelAdmin):
-    list_display = ["title", "owner", "updated_at"]
+    list_display = ["title", "section", "owner", "updated_at"]
+    list_filter = ["section"]
+    search_fields = ["title", "section"]
     inlines = [BlockInline]
 
 

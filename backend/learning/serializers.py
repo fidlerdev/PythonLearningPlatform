@@ -4,6 +4,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from .domain import ContentError, validate_exercise
+from .classification import normalize_classification
 from .models import Exercise, Lesson, LessonBlock
 
 
@@ -55,9 +56,20 @@ class LessonSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Lesson
-        fields = ["id", "title", "summary", "blocks", "release_count", "updated_at"]
+        fields = ["id", "title", "summary", "section", "tags", "blocks", "release_count", "updated_at"]
         read_only_fields = ["id", "updated_at"]
         extra_kwargs = {"summary": {"max_length": 4000}}
+
+    def validate(self, attrs):
+        try:
+            section, tags = normalize_classification(
+                attrs.get("section", self.instance.section if self.instance else ""),
+                attrs.get("tags", self.instance.tags if self.instance else []),
+            )
+        except ContentError as exc:
+            raise serializers.ValidationError({"classification": str(exc)}) from exc
+        attrs.update(section=section, tags=tags)
+        return attrs
 
     def validate_blocks(self, value):
         if len(value) > 100:

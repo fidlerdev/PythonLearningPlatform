@@ -89,9 +89,10 @@ def validate_exercise(data):
     elif kind == "robot":
         validate_world(config)
         require(isinstance(rules.get("require_loop", False), bool), "require_loop должен быть логическим значением.")
-        if "max_commands" in rules:
-            require(integer(rules["max_commands"]) and 1 <= rules["max_commands"] <= 1000,
-                    "Лимит команд: от 1 до 1000.")
+        for key in ("max_commands", "max_code_commands"):
+            if key in rules:
+                require(integer(rules[key]) and 1 <= rules[key] <= 1000,
+                        "Лимит команд: от 1 до 1000.")
     else:
         raise ContentError("Неизвестный тип задания.")
 
@@ -107,7 +108,7 @@ def public_exercise(exercise):
     result["hint_count"] = len(exercise.get("hints", []))
     if exercise["kind"] == "robot":
         result["requirements"] = {key: exercise["rules"][key] for key in
-                                  ["require_loop", "max_commands"] if key in exercise["rules"]}
+                                  ["require_loop", "max_commands", "max_code_commands"] if key in exercise["rules"]}
     return result
 
 
@@ -140,6 +141,28 @@ def validate_answer(exercise, answer):
     return {"code": code}
 
 
+def count_code_commands(tree):
+    """Count written robot action calls, not lines or loop repetitions."""
+    names = {"forward", "turn_left", "turn_right"}
+    nodes = list(ast.walk(tree))
+    for node in nodes:
+        if isinstance(node, ast.ImportFrom) and node.module == "robot":
+            names.update(alias.asname or alias.name for alias in node.names if alias.name in names)
+    # Simple aliases must have the same cost as the original action.
+    changed = True
+    while changed:
+        previous = len(names)
+        for node in nodes:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Name) and node.value.id in names:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                names.update(target.id for target in targets if isinstance(target, ast.Name))
+        changed = len(names) != previous
+    return sum(isinstance(node, ast.Call) and (
+        isinstance(node.func, ast.Name) and node.func.id in names
+        or isinstance(node.func, ast.Attribute) and node.func.attr in {"forward", "turn_left", "turn_right"}
+    ) for node in nodes)
+
+
 def grade(exercise, answer):
     normalized = validate_answer(exercise, answer)
     rules = exercise["rules"]
@@ -156,6 +179,10 @@ def grade(exercise, answer):
         tree = ast.parse(code)
     except SyntaxError as exc:
         return False, f"Проверь синтаксис в строке {exc.lineno}: {exc.msg}", "client_trace"
+    written = count_code_commands(tree)
+    if written > rules.get("max_code_commands", 1000):
+        return False, (f"В программе {written} команд движения, а можно не больше {rules['max_code_commands']}. "
+                       "Найди повторения и объедини их в цикл. Команды внутри цикла считаются в коде один раз."), "client_trace"
     if rules.get("require_loop") and not any(isinstance(n, (ast.For, ast.While)) for n in ast.walk(tree)):
         return False, "Путь нужно пройти с помощью цикла. Какие команды повторяются?", "client_trace"
     commands = answer.get("commands")
@@ -163,7 +190,8 @@ def grade(exercise, answer):
             all(isinstance(c, str) and c in ["forward", "left", "right"] for c in commands),
             "Сначала запусти программу, затем отправь результат проверки.")
     if len(commands) > rules.get("max_commands", 1000):
-        return False, "Слишком много движений. Можно ли сократить путь?", "client_trace"
+        return False, (f"Робот выполнил {len(commands)} действий, а можно не больше {rules['max_commands']}. "
+                       "Шаг и поворот расходуют по одному действию. Можно ли сократить путь?"), "client_trace"
     world = exercise["config"]
     x, y = world["start"]["x"], world["start"]["y"]
     direction = ["north", "east", "south", "west"].index(world["start"]["direction"])

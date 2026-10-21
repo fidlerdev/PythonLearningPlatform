@@ -54,6 +54,8 @@ class Lesson(models.Model):
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     title = models.CharField(max_length=200)
     summary = models.TextField(blank=True)
+    section = models.CharField(max_length=80, blank=True)
+    tags = models.JSONField(default=list, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):

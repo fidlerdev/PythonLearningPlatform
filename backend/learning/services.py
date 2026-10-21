@@ -1,8 +1,15 @@
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, Min
 
 from .domain import ContentError, validate_exercise
 from .models import Lesson, LessonRelease
+
+
+def published_lessons():
+    # Preserve the learning route when an existing lesson is republished.
+    return (Lesson.objects.annotate(first_published=Min("releases__created_at"))
+            .filter(first_published__isnull=False).order_by("first_published", "id")
+            .prefetch_related("releases"))
 
 
 @transaction.atomic

@@ -14,7 +14,8 @@ from rest_framework.views import APIView
 from .domain import ContentError, grade, public_snapshot, validate_answer
 from .models import Attempt, Draft, Exercise, HintUsage, Lesson, LessonRelease, User
 from .serializers import ExerciseSerializer, LessonSerializer
-from .services import publish
+from .services import publish, published_lessons
+from .progress import student_progress
 
 
 def user_data(user):
@@ -106,10 +107,11 @@ class CatalogView(APIView):
     def get(self, request):
         # All published lessons are available to authenticated users in the first version.
         rows = []
-        for lesson in Lesson.objects.filter(releases__isnull=False).distinct().prefetch_related("releases"):
+        for lesson in published_lessons():
             release = lesson.releases.all()[0]
             rows.append({"lesson_id": str(lesson.id), "release_id": str(release.id), "version": release.version,
                          "title": release.snapshot["title"], "summary": release.snapshot["summary"],
+                         "section": lesson.section, "tags": lesson.tags,
                          "task_count": sum(b["kind"] == "exercise" for b in release.snapshot["blocks"]),
                          "progress": progress(request.user, release)})
         return Response(rows)
@@ -117,13 +119,14 @@ class CatalogView(APIView):
 
 class ReleaseView(APIView):
     def get(self, request, release_id):
-        release = get_object_or_404(LessonRelease, pk=release_id)
+        release = get_object_or_404(LessonRelease.objects.select_related("lesson"), pk=release_id)
         drafts = {str(d.block_id): d.answer for d in Draft.objects.filter(student=request.user, release=release)}
         hints = {}
         for usage in HintUsage.objects.filter(student=request.user, release=release).order_by("level"):
             block = next(b for b in release.snapshot["blocks"] if b["id"] == str(usage.block_id))
             hints.setdefault(str(usage.block_id), []).append(block["exercise"]["hints"][usage.level])
         return Response({"id": str(release.id), "version": release.version, **public_snapshot(release.snapshot),
+                         "section": release.lesson.section, "tags": release.lesson.tags,
                          "progress": progress(request.user, release), "drafts": drafts, "hints": hints})
 
 
@@ -201,7 +204,7 @@ class HintView(APIView):
 
 
 class StudentSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, max_length=128)
+    password = serializers.CharField(write_only=True, max_length=128, trim_whitespace=False)
 
     class Meta:
         model = User
@@ -247,3 +250,38 @@ class StudentAttemptsView(APIView):
         return Response([{**attempt_data(attempt), "answer": attempt.answer, "block_id": str(attempt.block_id),
                           "lesson": attempt.release.snapshot["title"], "version": attempt.release.version,
                           "created_at": attempt.created_at.isoformat()} for attempt in attempts])
+
+
+def own_student(request, student_id):
+    students = User.objects.filter(role=User.Role.STUDENT)
+    if not request.user.is_superuser:
+        students = students.filter(teacher=request.user)
+    return get_object_or_404(students, pk=student_id)
+
+
+class MyProgressView(APIView):
+    def get(self, request):
+        return Response(student_progress(request.user))
+
+
+class StudentProgressView(APIView):
+    permission_classes = [IsAuthor]
+
+    def get(self, request, student_id):
+        student = own_student(request, student_id)
+        return Response({"student": user_data(student), **student_progress(student)})
+
+
+class StudentPasswordView(ObjectAPIView):
+    permission_classes = [IsAuthor]
+
+    def post(self, request, student_id):
+        student = own_student(request, student_id)
+        password = serializers.CharField(max_length=128, trim_whitespace=False).run_validation(request.data.get("password"))
+        try:
+            validate_password(password, student)
+        except DjangoValidationError as exc:
+            raise ValidationError({"password": exc.messages}) from exc
+        student.set_password(password)
+        student.save(update_fields=["password"])
+        return Response({"detail": "Пароль изменён. Передай новый пароль ученику."})

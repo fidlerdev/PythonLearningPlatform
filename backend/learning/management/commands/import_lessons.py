@@ -6,6 +6,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from learning.domain import ContentError, validate_exercise
+from learning.classification import normalize_classification
 from learning.models import Exercise, Lesson, LessonBlock, User
 from learning.services import publish
 
@@ -49,7 +50,8 @@ class Command(BaseCommand):
                     raise ContentError("Проверьте длину названия и описания урока.")
                 if not isinstance(definition.get("blocks"), list) or len(definition["blocks"]) > 100:
                     raise ContentError("blocks должен быть списком, не более 100 блоков.")
-                lesson = Lesson.objects.create(owner=owner, title=definition["title"], summary=definition.get("summary", ""))
+                section, tags = normalize_classification(definition.get("section", ""), definition.get("tags", []))
+                lesson = Lesson.objects.create(owner=owner, title=definition["title"], summary=definition.get("summary", ""), section=section, tags=tags)
                 for index, block in enumerate(definition["blocks"]):
                     if not isinstance(block, dict):
                         raise ContentError("Блок должен быть объектом.")
