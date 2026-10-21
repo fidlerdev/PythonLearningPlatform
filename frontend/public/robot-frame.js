@@ -5,8 +5,15 @@ let current = null;
 const runtimeUrl = 'https://cdn.jsdelivr.net/npm/skulpt@1.2.0/dist/skulpt.min.js';
 
 function runPython() {
+  let resumeStep = null;
+  let currentRun = null;
   self.onmessage = function (event) {
-    const { runId, world, code, runtimeUrl } = event.data;
+    if (event.data.type === 'step') {
+      if (event.data.runId === currentRun && resumeStep) { const resume = resumeStep; resumeStep = null; resume(); }
+      return;
+    }
+    const { runId, world, code, runtimeUrl, mode } = event.data;
+    currentRun = runId;
     const commands = [];
     try {
       importScripts(runtimeUrl);
@@ -28,27 +35,49 @@ function runPython() {
       };
       self.robotClearAhead = clearAhead;
       self.robotAtGoal = () => x === world.goal[0] && y === world.goal[1];
-      const moduleSource = `var $builtinmodule = function () {
-        var mod = {};
-        ['forward', 'left', 'right'].forEach(function (name) {
-          var publicName = name === 'left' ? 'turn_left' : name === 'right' ? 'turn_right' : name;
-          mod[publicName] = new Sk.builtin.func(function () { self.robotAction(name); return Sk.builtin.none.none$; });
-        });
-        mod.can_move = new Sk.builtin.func(function () { return Sk.ffi.remapToPy(self.robotClearAhead()); });
-        mod.at_goal = new Sk.builtin.func(function () { return Sk.ffi.remapToPy(self.robotAtGoal()); });
-        return mod;
-      };`;
+      // Keep the module for older programs that still import robot explicitly.
+      const moduleSource = 'var $builtinmodule = function () { return Object.assign({}, self.robotCommands); };';
       let printed = 0;
+      let nextLine = null;
+      let steps = 0;
       Sk.configure({
         __future__: Sk.python3,
         execLimit: 2500, yieldLimit: 50,
+        debugging: mode === 'step',
+        breakpoints: (filename, line) => { nextLine = line; return filename === '<stdin>.py'; },
         output: text => { printed += text.length; if (printed > 10000) throw new Sk.builtin.RuntimeError('Слишком много текста в print().'); },
         read: filename => {
           if (filename === 'src/lib/robot.js') return moduleSource;
           throw new Sk.builtin.ImportError('В этом задании доступен только модуль robot.');
         },
       });
-      Sk.misceval.asyncToPromise(() => Sk.importMainWithBody('<stdin>', false, code, true)).then(
+      self.robotCommands = {};
+      ['forward', 'left', 'right'].forEach(function (name) {
+        const publicName = name === 'left' ? 'turn_left' : name === 'right' ? 'turn_right' : name;
+        self.robotCommands[publicName] = new Sk.builtin.func(function () {
+          self.robotAction(name);
+          return Sk.builtin.none.none$;
+        });
+      });
+      self.robotCommands.can_move = new Sk.builtin.func(function () { return Sk.ffi.remapToPy(self.robotClearAhead()); });
+      self.robotCommands.at_goal = new Sk.builtin.func(function () { return Sk.ffi.remapToPy(self.robotAtGoal()); });
+      // Register commands as builtins instead of prepending an import. Student
+      // line numbers, syntax errors and command budgets keep their original meaning.
+      Object.assign(Sk.builtins, self.robotCommands);
+      Sk.misceval.asyncToPromise(() => Sk.importMainWithBody('<stdin>', false, code, true), {
+        'Sk.debug': suspension => new Promise((resolve, reject) => {
+          if (++steps > 10000) { reject(new Sk.builtin.RuntimeError('Слишком много шагов. Проверь цикл.')); return; }
+          const pausedAt = Date.now();
+          resumeStep = () => {
+            // Reading a line must not consume the Python execution time budget.
+            const delay = Date.now() - pausedAt;
+            Sk.execStart += delay;
+            Sk.lastYield += delay;
+            try { resolve(suspension.resume()); } catch (error) { reject(error); }
+          };
+          self.postMessage({ type: 'paused', runId, line: nextLine, commands: [...commands] });
+        }),
+      }).then(
         () => self.postMessage({ type: 'result', runId, commands }),
         error => self.postMessage({ type: 'result', runId, commands, error: String(error) }),
       );
@@ -59,8 +88,10 @@ function runPython() {
 }
 
 window.addEventListener('message', event => {
-  if (event.source !== parent || event.data?.type !== 'run') return;
-  const { runId, code, world } = event.data;
+  if (event.source !== parent) return;
+  if (event.data?.type === 'step' && event.data.runId === current) { worker?.postMessage(event.data); return; }
+  if (event.data?.type !== 'run') return;
+  const { runId, code, world, mode } = event.data;
   if (typeof runId !== 'string' || typeof code !== 'string' || code.length > 20000) return;
   worker?.terminate(); current = runId;
   const blob = new Blob([`(${runPython.toString()})();`], { type: 'text/javascript' });
@@ -68,11 +99,12 @@ window.addEventListener('message', event => {
   worker = new Worker(url); URL.revokeObjectURL(url);
   worker.onmessage = event => {
     if (event.data.runId !== current) return;
-    parent.postMessage(event.data, '*'); worker?.terminate(); worker = null;
+    parent.postMessage(event.data, '*');
+    if (event.data.type === 'result') { worker?.terminate(); worker = null; }
   };
   worker.onerror = () => {
     parent.postMessage({ type: 'result', runId, commands: [], error: 'Не удалось загрузить среду Python. Проверь доступ к cdn.jsdelivr.net.' }, '*');
     worker?.terminate(); worker = null;
   };
-  worker.postMessage({ runId, world, code, runtimeUrl });
+  worker.postMessage({ runId, world, code, runtimeUrl, mode });
 });
