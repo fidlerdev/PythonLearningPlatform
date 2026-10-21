@@ -63,8 +63,8 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
-SESSION_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_SECURE = os.environ.get("DJANGO_COOKIE_SECURE", "0" if DEBUG else "1") == "1"
+CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
 _development_origins = "http://127.0.0.1:5173,http://localhost:5173" if DEBUG else ""
 CSRF_TRUSTED_ORIGINS = [value.strip() for value in os.environ.get("CSRF_TRUSTED_ORIGINS", _development_origins).split(",") if value.strip()]
 SECURE_CONTENT_TYPE_NOSNIFF = True

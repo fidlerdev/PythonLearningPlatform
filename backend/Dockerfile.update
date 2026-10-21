@@ -1,0 +1,9 @@
+# Offline application update; refuses dependency changes. Build the normal
+# Dockerfile instead when pyproject.toml or uv.lock changes.
+ARG BASE_IMAGE=training-platform-server-backend:latest
+FROM ${BASE_IMAGE}
+WORKDIR /app
+COPY pyproject.toml uv.lock /tmp/platform-dependency-check/
+RUN cmp /tmp/platform-dependency-check/pyproject.toml /app/pyproject.toml \
+    && cmp /tmp/platform-dependency-check/uv.lock /app/uv.lock
+COPY . .
